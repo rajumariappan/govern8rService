@@ -1,7 +1,7 @@
 import requests
 import boto3
 import botocore
-from blockcypher import embed_data, get_transaction_details, subscribe_to_address_webhook
+from blockcypher import embed_data, get_transaction_details
 from boto3.dynamodb.conditions import Key
 import hashlib
 from datetime import datetime
@@ -10,7 +10,6 @@ import resource_factory
 
 config = configuration.NotaryConfiguration('./notaryconfig.ini')
 blockcypher_token = config.get_block_cypher_token()
-
 
 
 class NotarizationService(object):
@@ -118,6 +117,7 @@ class NotarizationService(object):
         try:
             self.notarization_table.update_item(
                 Key={
+                    'address': notarization['address'],
                     'document_hash': notarization['document_hash']
                 },
                 UpdateExpression="set document_status = :_status",
@@ -140,8 +140,16 @@ class NotarizationService(object):
         else:
             return response['Items'][0]
 
-    def get_notarization_status(self, document_hash):
-        notarization_data = self.get_notarization_by_document_hash(document_hash)
+    def get_notarizations_by_address(self, address):
+        try:
+            response = self.notarization_table.query(KeyConditionExpression=Key('address').eq(address))
+        except botocore.exceptions.ClientError as e:
+            self.logger.exception("Problem accessing notarization table %s " % e.response)
+
+        return response['Items']
+
+    def get_notarization_status(self, address, document_hash):
+        notarization_data = self.get_notarization_by_document_hash(address, document_hash)
         status_data = get_transaction_details(notarization_data['transaction_hash'], config.get_coin_network())
         if status_data is None:
             return None
@@ -152,7 +160,7 @@ class NotarizationService(object):
         try:
             s3 = boto3.resource('s3', region_name='us-east-1')
             key = notarization['address']+'/'+notarization['document_hash']
-            s3.Bucket('govern8r-notarized-documents').put_object(Key=key, Body=file_to_store, ACL='public-read')
+            s3.Bucket(config.get_bucket_name()).put_object(Key=key, Body=file_to_store, ACL='public-read')
             self.update_document_status(notarization, 'ON_FILE')
             self.logger.debug ('https://bucket.s3.amazonaws.com'+'/'+key)
         except botocore.exceptions.ClientError as e:
